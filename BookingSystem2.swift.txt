@@ -1,0 +1,170 @@
+import Cocoa
+
+var str = "Hello, playground"
+enum UserType{
+    case FirstClass
+    case Economic
+}
+
+struct User: Equatable{
+    var name: String
+    var type: UserType
+}
+
+class BookingSystem{
+    var bookings: [Int:(User, TimeInterval)] = [:]
+    var firstClassChangeOrders: [(User, Int, Int, (Bool)->Void)] = []
+    var economicClassChangeOrders:  [(User, Int, Int, (Bool)->Void)] = []
+    var lock = NSLock()
+    var firstChangelock = NSLock()
+    var economicChangelock = NSLock()
+    var firstClassChangesServedInRow: Int = 0
+    
+    init(){
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else {
+                return
+            }
+            while true{
+                var changeOrder: (User, Int, Int, (Bool)->Void)?
+                if self.firstClassChangesServedInRow < 10 {
+                    //print("first class change request")
+                    self.firstChangelock.lock()
+                    if self.firstClassChangeOrders.count != 0{
+                        print("first class change request")
+                        changeOrder = self.firstClassChangeOrders.remove(at: 0)
+                        self.firstClassChangesServedInRow += 1
+                    }
+                    self.firstChangelock.unlock()
+                }
+                if changeOrder == nil {
+                    self.firstClassChangesServedInRow = 0
+                    if changeOrder == nil{
+                        self.economicChangelock.lock()
+                        if self.economicClassChangeOrders.count != 0{
+                            print("economic class change request")
+                            changeOrder = self.economicClassChangeOrders.remove(at: 0)
+                        }
+                        self.economicChangelock.unlock()
+                    }
+                }
+                
+                if let changeOrder = changeOrder{
+                    let (user, pre, needed, callBack) = changeOrder
+                    self.lock.lock()
+                    if self.bookings[pre] != nil && self.bookings[pre]!.0 == user && self.bookings[pre]!.1 + Double(24*60*60) > Date().timeIntervalSince1970{
+                        if self.bookings[needed] == nil{
+                            // possible
+                            print("\(user) seat is changed to \(needed)")
+                            self.bookings[needed] = (user, self.bookings[pre]!.1)
+                            self.bookings[pre] = nil
+                            self.lock.unlock()
+                            callBack(true)
+                            continue
+                        }
+                    }
+                     print("\(user) cannot change seat to \(needed)")
+                    self.lock.unlock()
+                    callBack(false)
+                }else{
+                    Thread.sleep(forTimeInterval: Double(1))
+                }
+            }
+        }
+    }
+    
+    func bookSeat(_ user: User, _ number: Int, _ callBack: @escaping (Bool)->Void ) {
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else {
+                callBack(false)
+                return
+            }
+            if user.type == UserType.Economic && number < 40{
+                callBack(false)
+                return
+            }
+            self.lock.lock()
+            if self.bookings[number] == nil{
+                self.bookings[number] = (user, Date().timeIntervalSince1970)
+                self.lock.unlock()
+                callBack(true)
+                return
+            }
+            self.lock.unlock()
+            callBack(false)
+        }
+    }
+    
+    
+    
+    func changeSeat(_ user: User, _ pre: Int, _ needed: Int, _ callBack: @escaping (Bool)->Void){
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else {
+                callBack(false)
+                return
+            }
+            guard user.type == UserType.Economic && needed >= 40 || user.type == UserType.FirstClass else {
+                callBack(false)
+                return
+            }
+            if user.type == UserType.Economic{
+                print("Economic is registering a change request")
+                self.economicChangelock.lock()
+                self.economicClassChangeOrders.append((user, pre, needed, callBack))
+                self.economicChangelock.unlock()
+            }else{
+                print("First is registering a change request")
+                self.firstChangelock.lock()
+                self.firstClassChangeOrders.append((user, pre, needed, callBack))
+                self.firstChangelock.unlock()
+            }
+        }
+    }
+}
+
+var callBack = { (result) in
+    print(result)
+}
+
+var user1 = User(name: "Rahaf", type: UserType.FirstClass)
+var user2 = User(name: "Raghad", type: UserType.Economic)
+var user3 = User(name: "Samah", type: UserType.FirstClass)
+var user4 = User(name: "Marah", type: UserType.FirstClass)
+var user5 = User(name: "Rahaf", type: UserType.FirstClass)
+var user6 = User(name: "Raghad", type: UserType.FirstClass)
+var user7 = User(name: "Samah", type: UserType.FirstClass)
+var user8 = User(name: "Marah", type: UserType.FirstClass)
+var user9 = User(name: "Rahaf", type: UserType.FirstClass)
+var user10 = User(name: "Raghad", type: UserType.FirstClass)
+var user11 = User(name: "Samah", type: UserType.FirstClass)
+var user12 = User(name: "Marah", type: UserType.FirstClass)
+
+var bookingSystem = BookingSystem()
+
+bookingSystem.bookSeat(user1, 0, callBack)
+bookingSystem.bookSeat(user2, 56, callBack)
+bookingSystem.bookSeat(user3, 1, callBack)
+bookingSystem.bookSeat(user4, 6, callBack)
+bookingSystem.bookSeat(user5, 7, callBack)
+bookingSystem.bookSeat(user6, 9, callBack)
+bookingSystem.bookSeat(user7, 87, callBack)
+bookingSystem.bookSeat(user8, 4, callBack)
+bookingSystem.bookSeat(user9, 2, callBack)
+bookingSystem.bookSeat(user10, 8, callBack)
+bookingSystem.bookSeat(user11, 34, callBack)
+bookingSystem.bookSeat(user12, 23, callBack)
+
+Thread.sleep(forTimeInterval: Double(5))
+
+bookingSystem.changeSeat(user1, 0, 5, callBack)
+bookingSystem.changeSeat(user2, 56, 78, callBack)
+bookingSystem.changeSeat(user3, 1, 78, callBack)
+bookingSystem.changeSeat(user4, 6, 7, callBack)
+bookingSystem.changeSeat(user5, 7, 32, callBack)
+bookingSystem.changeSeat(user6, 9, 66, callBack)
+bookingSystem.changeSeat(user7, 87, 5, callBack)
+bookingSystem.changeSeat(user8, 4, 31, callBack)
+bookingSystem.changeSeat(user9, 2, 9, callBack)
+bookingSystem.changeSeat(user10, 8, 2, callBack)
+bookingSystem.changeSeat(user11, 34, 6, callBack)
+bookingSystem.changeSeat(user12, 23, 0, callBack)

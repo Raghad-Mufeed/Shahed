@@ -1,0 +1,122 @@
+import Cocoa
+
+var str = "Hello, playground"
+enum UserType{
+    case First
+    case Economic
+}
+
+struct User:Hashable{
+    var name:String
+    var type: UserType
+}
+
+class BookingSystem{
+    
+    var bookings: [Int:User] = [:]
+    var bookingsStart:[Int: TimeInterval] = [:]
+    var requestedChanges2:[Int:Int] = [:] //Number Of seat along with number of first class user already requested changing to it but they haven't started yet
+    var lock = NSLock()
+    var requestedLock = NSLock()
+    
+    
+    init(){
+        for i in 0..<100{
+            requestedChanges2[i] = 0 // not necessary, it's okay to have them all nil
+        }
+    }
+    
+    func bookSeat(_ user: User, _ number: Int, _ callBack: @escaping (Bool)->Void ) {
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else {
+                callBack(false)
+                return
+            }
+            if user.type == UserType.Economic && number < 40{
+                callBack(false)
+                return
+            }
+            self.lock.lock()
+            if self.bookings[number] == nil{
+                self.bookings[number] = user
+                self.bookingsStart[number] = Date().timeIntervalSince1970
+                self.lock.unlock()
+                callBack(true)
+                return
+            }
+            self.lock.unlock()
+            callBack(false)
+        }
+    }
+    
+    func changeSeat(_ user: User, _ pre: Int, _ needed: Int, _ callBack: @escaping (Bool)->Void){
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else {
+                callBack(false)
+                return
+            }
+            if user.type == UserType.Economic && needed < 40{
+                callBack(false)
+                return
+            }
+            
+            if user.type == UserType.Economic{
+                /// I only check once and if I find a user from the first class trying to book the same seat I will return false directly, but in this case we might reach a point when the first class hasn't scceeded in booking the seat neither the economic because we prevent it from trying to book totally
+                /// I'm not sure if this correct, I feel like we still compete which one will take this lock first to check
+                self.requestedLock.lock()
+                if self.requestedChanges2[needed] != nil && self.requestedChanges2[needed] != 0{
+                    self.requestedLock.unlock()
+                    callBack(false)
+                    return
+                }
+                self.requestedLock.unlock()
+            }else{
+                self.requestedLock.lock()
+                self.requestedChanges2[needed] != nil ?  (self.requestedChanges2[needed]! += 1) : (self.requestedChanges2[needed] = 1)  // update number of first class users trying to book that seat
+                self.requestedLock.unlock()
+            }
+            
+            self.lock.lock()
+            if self.bookings[pre] == user && self.bookingsStart[pre]! + Double(24*60*60) > Date().timeIntervalSince1970{
+                if user.type == UserType.First{
+                    self.requestedLock.lock()
+                    self.requestedChanges2[needed]! -= 1
+                    self.requestedLock.unlock()
+                }
+                if self.bookings[needed] == nil{
+                    // possible
+                    self.bookings[needed] = user
+                    self.bookings[pre] = nil
+                    self.lock.unlock()
+                    callBack(true)
+                    return
+                }
+            }
+            self.lock.unlock()
+            callBack(false)
+        }
+    }
+}
+
+
+
+/*
+ 
+ // declare these variables in the Booking class
+   var firstRequestedLock = NSLock()
+   var firstRequestedChange = 0
+ 
+ // this if we assumed that the first has higher priority to change than economic even if they need to change to different seats ..
+ // in this case all first class queries will be served first
+ // but this could cause starvation if it's possible to have a lot of requests so we need to store requests in two arrays , one to the highest priority when to the other
+ // after certain time the priority of the economic will be incremented to avoid starvation
+ 
+ if user.type == UserType.Economic{
+    while self.firstRequestedChange != 0{}   // this reads the same var, not correct but just to show the idea
+}else{
+    self.firstRequestedLock.lock()
+    self.firstRequestedChange += 1  // update number of first class users trying to book that seat
+    self.firstRequestedLock.unlock()
+}
+ 
+ */

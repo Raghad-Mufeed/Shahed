@@ -1,0 +1,291 @@
+import Cocoa
+
+var str = "Hello, playground"
+
+enum DrinkType:Int{
+    case Coffee = 0
+    case Cappuchino
+    case Espresso
+}
+
+enum MilkState: Int{
+    case None = 0
+    case Hot
+    case Cold
+}
+
+enum Amount: Int{
+    case None = 0
+    case OneTableSpoon
+    case TwoTableSpoons
+    case ThreeTableSpoons
+}
+
+enum Ingredients{
+    case Water
+    case Coffee
+    case Sugar
+    case Milk
+    case MState
+}
+enum DrinkStatus{
+    case Unprocessed
+    case Processing
+    case Ready
+}
+
+struct Drink:Hashable{
+    let type: DrinkType
+    let sugarAmount: Amount
+}
+
+struct Order:Hashable{
+    static func == (lhs: Order, rhs: Order) -> Bool {
+        return lhs.orderID == rhs.orderID
+    }
+    
+    let orderID: Int
+    let userName: String
+    var drinks: [Drink] = []
+    static var IDFactory = 0
+    
+    init(userName: String) {
+        self.orderID = Order.IDFactory
+        Order.IDFactory += 1
+        self.userName = userName
+    }
+    
+    init(userName: String, drinks: [Drink]) {
+        self.init(userName: userName)
+        self.drinks = drinks
+    }
+}
+
+// I changed it to cup so when it goes to add ingredients functions, it remains the same(don't have to return cup from them)
+class Cup{
+    var ingredients: [Ingredients: Int] = [:]
+    
+    func addIngredient(_ ingredient: Ingredients, amount: Int){
+        ingredients[ingredient] = amount
+    }
+}
+
+func requestFromDataBase(for drinkType: DrinkType) -> [Ingredients:Int]{
+    switch drinkType {
+    case DrinkType.Coffee:
+        return [Ingredients.Coffee: 2, Ingredients.Water: 100]
+    case DrinkType.Cappuchino:
+        return [Ingredients.Coffee: 1, Ingredients.Milk: 60, Ingredients.MState: MilkState.Hot.rawValue, Ingredients.Water: 40]
+    case DrinkType.Espresso:
+        return [Ingredients.Coffee: 3, Ingredients.Water: 100]
+    }
+}
+
+class CoffeePreparer{
+    static let MAX_CAPACITY = 5 // drinks not orders
+    var processingOrders: [Order: [DrinkStatus]] = [:]
+    private var waitingOrders = 0{
+        didSet{
+            getNewOrderForProcessing()
+        }
+    }
+    private var processingDrinks = 0{
+        didSet{
+            getNewOrderForProcessing()
+        }
+    }
+    var machine: CoffeeMachine
+    var milkLock = NSLock()
+    var waterLock = NSLock()
+    var coffeeLock = NSLock()
+    var sugarLock = NSLock()
+    var fetchingLock = NSLock()
+    var waitingOrdersLock = NSLock()
+    var processingDrinksLock = NSLock()
+    
+    init(machine: CoffeeMachine) {
+        self.machine = machine
+    }
+    
+    //critical
+    func getNewOrderForProcessing(){
+        fetchingLock.lock()
+        if processingDrinks < CoffeePreparer.MAX_CAPACITY{
+            for orderPair in processingOrders{
+                for index in 0..<orderPair.key.drinks.count{
+                    let drinkStatus = orderPair.value[index]
+                    guard drinkStatus != DrinkStatus.Unprocessed else {continue}
+                    var updatedStatus = orderPair.value
+                    updatedStatus[index] = DrinkStatus.Processing
+                    processingOrders[orderPair.key] = updatedStatus
+                    updateProcessingDrinks(by: 1)
+                    DispatchQueue.global().async { [weak self] in
+                        if let self = self{
+                            self.processDrink(drink: orderPair.key.drinks[index], from: orderPair.key)
+                        }
+                    }
+                    if processingDrinks >= CoffeePreparer.MAX_CAPACITY{
+                        return
+                    }
+                }
+            } //if reach here no drinks need processing from the processing orders
+            guard processingDrinks < CoffeePreparer.MAX_CAPACITY else {return}
+            fetchNewOrder()
+        }
+        fetchingLock.unlock()
+    }
+    
+    private func getCup() -> Cup{
+        return Cup()
+    }
+    
+    private func pourWater(_ amount: Int, in cup: Cup){
+        let secondsNeeded = 0.01 * Double(amount)
+        Thread.sleep(forTimeInterval: secondsNeeded)
+        cup.addIngredient(Ingredients.Water, amount: amount)
+    }
+    
+    private func pourMilk(_ amount: Int, state: MilkState, in cup: Cup){
+        let secondsNeeded = 0.02 * Double(amount)
+        Thread.sleep(forTimeInterval: secondsNeeded)
+        cup.addIngredient(Ingredients.Milk, amount: amount)
+    }
+    
+    private func addSugar(_ amount: Amount, in cup: Cup){
+        let secondsNeeded = 1 * amount.rawValue
+        Thread.sleep(forTimeInterval: Double(secondsNeeded))
+        cup.addIngredient(Ingredients.Sugar, amount: amount.rawValue)
+    }
+    
+    private func addCoffee(_ amount: Int, in cup: Cup){
+        let secondsNeeded = 2 * amount
+        Thread.sleep(forTimeInterval: Double(secondsNeeded))
+        cup.addIngredient(Ingredients.Coffee, amount: amount)
+    }
+    
+    private func getResources(for drink: DrinkType) -> [Ingredients: Int]{
+        return requestFromDataBase(for: drink)
+    }
+    
+    // should be assigned to threads so several drinks can be processed in parallel
+    func processDrink(drink: Drink, from order: Order){
+        let recipe = getResources(for: drink.type)
+        var milkRequired = recipe[Ingredients.Milk] != nil
+        var waterRequired = recipe[Ingredients.Water] != nil
+        var coffeeRequired = recipe[Ingredients.Coffee] != nil
+        var sugarRequired = true
+        let cup = getCup()
+        
+        while (milkRequired || waterRequired || coffeeRequired || sugarRequired){
+            // if resourse available, use it, if not just skip to next resourse to do so
+            if (milkRequired){
+                if milkLock.try(){
+                    pourMilk(recipe[Ingredients.Milk]!, state: MilkState(rawValue: recipe[Ingredients.MState] ?? 1) ?? MilkState.Hot, in: cup)
+                    milkRequired = false
+                    milkLock.unlock()
+                }
+            }
+            
+            if (waterRequired){
+                if waterLock.try() {
+                    pourWater(recipe[Ingredients.Water]!, in: cup)
+                    waterRequired = false
+                    waterLock.unlock()
+                }
+            }
+            
+            if (coffeeRequired){
+                if coffeeLock.try(){
+                    addCoffee(recipe[Ingredients.Coffee]!, in: cup)
+                    coffeeRequired = false
+                    coffeeLock.unlock()
+                }
+            }
+            
+            if drink.sugarAmount == Amount.None{
+                sugarRequired = false
+            }
+            if (sugarRequired){
+                if sugarLock.try(){
+                    addSugar(drink.sugarAmount, in: cup)
+                    sugarRequired = false
+                    sugarLock.unlock()
+                }
+            }
+        }
+        updateProcessingDrinks(by: -1)
+        if isOrderFinished(order){
+            machine.endOrder(order)
+        }
+    }
+    
+    func fetchNewOrder(){
+        // should be Atomaic function, it's called just from one place (it's critical) so no need to have lock here too
+        if waitingOrders > 0{
+            if let order = machine.getOrder(){
+                processingOrders[order] = Array(repeating: DrinkStatus.Unprocessed, count: order.drinks.count)
+                decrementWaitingOrders()
+            }
+        }
+    }
+    
+    func updateProcessingDrinks(by value: Int){
+        processingDrinksLock.lock()
+        processingDrinks += value
+        processingDrinksLock.unlock()
+    }
+    func incrementWaitingOrders(){
+        waitingOrdersLock.lock()
+        waitingOrders += 1
+        waitingOrdersLock.unlock()
+    }
+    
+    func decrementWaitingOrders(){
+        waitingOrdersLock.lock()
+        waitingOrders -= 1
+        waitingOrdersLock.unlock()
+    }
+    
+    func isOrderFinished(_ order: Order) -> Bool{
+        let orderPair = processingOrders[order]
+        guard let orderStatus = orderPair else{return true}
+        for drinkStatus in orderStatus{
+            if drinkStatus != DrinkStatus.Ready{
+                return false
+            }
+        }
+        return true
+    }
+}
+
+class CoffeeMachine{
+    var orders: [Order] = []
+    //TODO: addQueuesForPriorities
+    lazy var preparer = CoffeePreparer(machine: self)
+    
+    func takeOrder(userName: String, drinks: [(drinkType: DrinkType, sugarAmount: Amount)]){
+        var drinksObjects: [Drink] = []
+        for pair in drinks{
+            let drink = Drink(type: pair.drinkType, sugarAmount: pair.sugarAmount)
+            drinksObjects.append(drink)
+        }
+        let order = Order(userName: userName, drinks: drinksObjects)
+        orders.append(order)
+        preparer.incrementWaitingOrders()
+    }
+    
+    func getOrder() -> Order?{
+        // called from Preparer when there is space there (critical section) called from critical
+        var order: Order? = nil
+        if !orders.isEmpty{
+            order = orders.first
+            orders.remove(at: 0)
+        }
+        return order
+    }
+    
+    func endOrder(_ order:Order){
+        //display message for the user that their order is ready
+        print("\(order.userName), your order is ready, enjoy it ..")
+    }
+}
